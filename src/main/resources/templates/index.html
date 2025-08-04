@@ -6,8 +6,8 @@
     <!-- HTMX and Chart.js -->
     <script src="https://unpkg.com/htmx.org@1.9.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- Google Charts loader -->
-    <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+    <link href="https://unpkg.com/vis-timeline@latest/styles/vis-timeline-graph2d.min.css" rel="stylesheet">
+    <script src="https://unpkg.com/vis-timeline@latest/standalone/umd/vis-timeline-graph2d.min.js"></script>
 
 
     <!-- Bootstrap 5 -->
@@ -147,14 +147,12 @@
                 <div class="card">
                     <div class="card-body">
                         <div class="card-title">Session Timeline</div>
-                        <div id="timelineContainer" style="width:100%; overflow-x:auto;">
-                            <!-- The chart will size its height dynamically via JS -->
-                            <div id="timelineChart"></div>
-                        </div>
+                        <div id="visTimeline" style="height: 300px;"></div>
                     </div>
                 </div>
             </div>
         </div>
+
 
 
     </div>
@@ -259,98 +257,45 @@
         }
         loadConcurrencyChart();
     </script>
-
     <script>
-        function colorForGame(gameName) { /* Stable hex color per game */
-            let hash = 0;
-            for (let i = 0; i < gameName.length; i++) hash = ((hash << 5) - hash) + gameName.charCodeAt(i) | 0;
-            const hue = Math.abs(hash) % 360;
-            return 'color: ' + hslToHex(hue, 70, 45);
-        }
+        async function loadVisTimeline() {
+            const res = await fetch('/games/stats/session-timeline');
+            const sessions = await res.json();
 
-        function hslToHex(h, s, l) { /* Convert HSL to #RRGGBB */
-            s /= 100; l /= 100;
-            const a = s * Math.min(l, 1 - l);
-            const f = n => {
-                const k = (n + h / 30) % 12;
-                const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
-                return Math.round(255 * c).toString(16).padStart(2, '0');
-            };
-            return `#${f(0)}${f(8)}${f(4)}`;
-        }
-
-        function drawTimeline(sessions) { /* Render Google Timeline with dynamic height */
-            const container = document.getElementById('timelineChart');
-            if (!sessions || sessions.length === 0) {
-                container.innerHTML = '<div class="text-secondary">No sessions yet</div>';
-                return;
-            }
-
+            // Define unique users as groups
             const users = Array.from(new Set(sessions.map(s => s.username)));
-            const perRow = 36; /* pixels per user row */
-            const extra = 60;  /* axis and padding */
-            const height = Math.max(180, users.length * perRow + extra);
-            container.style.height = height + 'px';
+            const groups = users.map((u, i) => ({ id: i + 1, content: u }));
 
-            const dt = new google.visualization.DataTable();
-            dt.addColumn({ type: 'string', id: 'User' });
-            dt.addColumn({ type: 'string', id: 'Game' });
-            dt.addColumn({ type: 'string', role: 'style' });
-            dt.addColumn({ type: 'date', id: 'Start' });
-            dt.addColumn({ type: 'date', id: 'End' });
+            // Build items: each session becomes an entry
+            const items = new vis.DataSet(sessions.map((s, idx) => {
+                return {
+                    id: idx + 1,
+                    group: users.indexOf(s.username) + 1,
+                    content: s.game,
+                    start: s.start,
+                    end: s.end,
+                    className: ''
+                };
+            }));
 
-            const rows = [];
-            for (const s of sessions) {
-                const start = new Date(s.start);
-                const end = new Date(s.end);
-                if (!isNaN(start) && !isNaN(end) && end > start) {
-                    rows.push([s.username, s.game, colorForGame(s.game), start, end]);
-                }
-            }
-            if (rows.length === 0) {
-                container.innerHTML = '<div class="text-secondary">No valid sessions</div>';
-                return;
-            }
-            dt.addRows(rows);
-
-            const chart = new google.visualization.Timeline(container);
+            const container = document.getElementById('visTimeline');
             const options = {
-                height: height,
-                backgroundColor: '#1e1e1e',
-                timeline: {
-                    groupByRowLabel: false,
-                    rowLabelStyle: { color: '#ffffff', fontSize: 12 },
-                    barLabelStyle: { color: '#ffffff', fontSize: 11 }
-                },
-                hAxis: { textStyle: { color: '#cccccc' } }
+                stack: false,
+                horizontalScroll: true,
+                zoomKey: 'ctrlKey',
+                margin: { item: 8, axis: 5 },
+                orientation: { axis: 'bottom' },
+                height: '100%',
+                groupHeightMode: 'fixed'
             };
 
-            /* Ensure the internal container adopts our height to prevent inner scrolling */
-            google.visualization.events.addListener(chart, 'ready', function () {
-                const inner = container.querySelector('div');
-                if (inner) inner.style.height = height + 'px';
-            });
-
-            chart.draw(dt, options);
+            // Render the timeline
+            new vis.Timeline(container, items, groups, options);
         }
 
-        async function loadTimelineChart() { /* Fetch and render sessions */
-            try {
-                const res = await fetch('/games/stats/session-timeline');
-                const sessions = await res.json();
-                drawTimeline(sessions);
-            } catch (e) {
-                document.getElementById('timelineChart').innerHTML = '<div class="text-danger">Failed to load timeline</div>';
-            }
-        }
-
-        google.charts.load('current', { packages: ['timeline'] });
-        google.charts.setOnLoadCallback(async function () {
-            await loadTimelineChart();
-            setInterval(loadTimelineChart, 30000);
-        });
+        loadVisTimeline();
+        setInterval(loadVisTimeline, 30000);
     </script>
-
 
 
 </body>
