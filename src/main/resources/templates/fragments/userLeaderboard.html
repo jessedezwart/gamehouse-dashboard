@@ -1,0 +1,14 @@
+<table class="table table-sm table-dark table-striped align-middle mb-0">
+  <thead>
+    <tr>
+      <th>User</th>
+      <th>Total Playtime</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr th:each="entry : ${leaderboard}">
+      <td th:text="${entry.username}">Name</td>
+      <td th:text="${entry.duration}">Duration</td>
+    </tr>
+  </tbody>
+</table>

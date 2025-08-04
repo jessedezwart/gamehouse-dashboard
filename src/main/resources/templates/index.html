@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org">
+
+<head>
+    <title>Gamehouse IX (2025)</title>
+    <!-- HTMX and Chart.js -->
+    <script src="https://unpkg.com/htmx.org@1.9.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Google Charts loader -->
+    <script type="text/javascript" src="https://www.gstatic.com/charts/loader.js"></script>
+
+
+    <!-- Bootstrap 5 -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+    <style>
+        /* Use a dark dashboard background */
+        body {
+            background-color: #1e1e1e;
+            color: #fff;
+            padding-top: 1.5rem;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarell, 'Helvetica Neue', Arial, 'Noto Sans', 'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol';
+        }
+
+        /* Compact, dark cards */
+        .card {
+            background-color: #2a2a2a;
+            border: none;
+        }
+
+        .card-body {
+            padding: .75rem;
+        }
+
+        /* Remove any fixed canvas height to avoid distortion */
+        canvas {
+            width: 100% !important;
+            height: auto !important;
+        }
+
+        /* Make headings smaller for denser UI */
+        .card-title {
+            margin: 0 0 .5rem 0;
+            font-size: 1rem;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        h1 {
+            color: #fff;
+        }
+
+        .pie-container {
+            max-width: 420px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        /* Timeline container should never clip vertically */
+        #timelineContainer {
+            overflow-x: auto;
+            overflow-y: visible;
+        }
+
+        /* Ensure the inner div Google Charts injects stretches to the height we set */
+        #timelineChart {
+            width: 100%;
+        }
+
+        #timelineChart>div {
+            height: 100% !important;
+            overflow: visible !important;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container-fluid">
+        <h1 class="text-center mb-3">Gamehouse IX (2025)</h1>
+
+        <!-- Top row: tables 3/3 cols, pie chart 6 cols -->
+        <div class="row g-2 mb-2">
+            <div class="col-lg-3">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="card-title">Live Game Sessions</div>
+                        <div id="game-table" hx-get="/games/table" hx-trigger="load, every 1s" hx-swap="innerHTML">
+                            Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-3">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="card-title">Most Played Games</div>
+                        <div id="leaderboard" hx-get="/games/leaderboard" hx-trigger="load, every 10s"
+                            hx-swap="innerHTML">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="card-title">Total Playtime per Game</div>
+                        <div class="pie-container">
+                            <div class="ratio ratio-1x1">
+                                <canvas id="pieChart"></canvas>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+
+        <!-- Second row: user leaderboard 4 cols, concurrency 8 cols -->
+        <div class="row g-2">
+            <div class="col-lg-4">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="card-title">User Leaderboard</div>
+                        <div id="user-leaderboard" hx-get="/games/stats/user-leaderboard" hx-trigger="load, every 30s"
+                            hx-swap="innerHTML">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="col-lg-8">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="card-title">Peak Concurrency</div>
+                        <!-- Use a wide ratio so the line chart breathes horizontally -->
+                        <div class="ratio ratio-21x9">
+                            <canvas id="concurrencyChart"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Session Timeline -->
+        <div class="row g-3 mt-3">
+            <div class="col-12">
+                <div class="card">
+                    <div class="card-body">
+                        <div class="card-title">Session Timeline</div>
+                        <div id="timelineContainer" style="width:100%; overflow-x:auto;">
+                            <!-- The chart will size its height dynamically via JS -->
+                            <div id="timelineChart"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+
+    </div>
+
+
+    <!-- Pie chart script -->
+    <script>
+        // Load and auto-refresh pie chart data
+        async function loadPieChart() {
+            const res = await fetch('/games/stats/game-distribution');
+            const data = await res.json();
+            const ctx = document.getElementById('pieChart').getContext('2d');
+
+            const chart = new Chart(ctx, {
+                type: 'pie',
+                data: {
+                    labels: Object.keys(data),
+                    datasets: [{ data: Object.values(data) }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    aspectRatio: 1
+                }
+            });
+
+            setInterval(async () => {
+                const update = await fetch('/games/stats/game-distribution');
+                const json = await update.json();
+                chart.data.labels = Object.keys(json);
+                chart.data.datasets[0].data = Object.values(json);
+                chart.update();
+            }, 30000);
+        }
+        loadPieChart();
+    </script>
+
+    <!-- Concurrency chart script -->
+    <script>
+        // Load and auto-refresh concurrency data
+        async function loadConcurrencyChart() {
+            const res = await fetch('/games/stats/peak-concurrency');
+            const data = await res.json();
+            const labels = Object.keys(data);
+            const values = Object.values(data);
+            const ctx = document.getElementById('concurrencyChart').getContext('2d');
+
+            const chart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels,
+                    datasets: [{
+                        label: 'Players online',
+                        data: values,
+                        fill: true,
+                        tension: 0.35
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            min: 0,
+                            max: 10, // Always show 0–10 users
+                            ticks: {
+                                stepSize: 1,
+                                color: '#ccc',
+                                precision: 0
+                            },
+                            grid: {
+                                color: 'rgba(255,255,255,0.1)'
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#ccc'
+                            },
+                            grid: {
+                                color: 'rgba(255,255,255,0.05)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            labels: {
+                                color: '#ccc'
+                            }
+                        }
+                    }
+                }
+
+            });
+
+            setInterval(async () => {
+                const update = await fetch('/games/stats/peak-concurrency');
+                const json = await update.json();
+                chart.data.labels = Object.keys(json);
+                chart.data.datasets[0].data = Object.values(json);
+                chart.update();
+            }, 60000);
+        }
+        loadConcurrencyChart();
+    </script>
+
+    <script>
+        function colorForGame(gameName) { /* Stable hex color per game */
+            let hash = 0;
+            for (let i = 0; i < gameName.length; i++) hash = ((hash << 5) - hash) + gameName.charCodeAt(i) | 0;
+            const hue = Math.abs(hash) % 360;
+            return 'color: ' + hslToHex(hue, 70, 45);
+        }
+
+        function hslToHex(h, s, l) { /* Convert HSL to #RRGGBB */
+            s /= 100; l /= 100;
+            const a = s * Math.min(l, 1 - l);
+            const f = n => {
+                const k = (n + h / 30) % 12;
+                const c = l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+                return Math.round(255 * c).toString(16).padStart(2, '0');
+            };
+            return `#${f(0)}${f(8)}${f(4)}`;
+        }
+
+        function drawTimeline(sessions) { /* Render Google Timeline with dynamic height */
+            const container = document.getElementById('timelineChart');
+            if (!sessions || sessions.length === 0) {
+                container.innerHTML = '<div class="text-secondary">No sessions yet</div>';
+                return;
+            }
+
+            const users = Array.from(new Set(sessions.map(s => s.username)));
+            const perRow = 36; /* pixels per user row */
+            const extra = 60;  /* axis and padding */
+            const height = Math.max(180, users.length * perRow + extra);
+            container.style.height = height + 'px';
+
+            const dt = new google.visualization.DataTable();
+            dt.addColumn({ type: 'string', id: 'User' });
+            dt.addColumn({ type: 'string', id: 'Game' });
+            dt.addColumn({ type: 'string', role: 'style' });
+            dt.addColumn({ type: 'date', id: 'Start' });
+            dt.addColumn({ type: 'date', id: 'End' });
+
+            const rows = [];
+            for (const s of sessions) {
+                const start = new Date(s.start);
+                const end = new Date(s.end);
+                if (!isNaN(start) && !isNaN(end) && end > start) {
+                    rows.push([s.username, s.game, colorForGame(s.game), start, end]);
+                }
+            }
+            if (rows.length === 0) {
+                container.innerHTML = '<div class="text-secondary">No valid sessions</div>';
+                return;
+            }
+            dt.addRows(rows);
+
+            const chart = new google.visualization.Timeline(container);
+            const options = {
+                height: height,
+                backgroundColor: '#1e1e1e',
+                timeline: {
+                    groupByRowLabel: false,
+                    rowLabelStyle: { color: '#ffffff', fontSize: 12 },
+                    barLabelStyle: { color: '#ffffff', fontSize: 11 }
+                },
+                hAxis: { textStyle: { color: '#cccccc' } }
+            };
+
+            /* Ensure the internal container adopts our height to prevent inner scrolling */
+            google.visualization.events.addListener(chart, 'ready', function () {
+                const inner = container.querySelector('div');
+                if (inner) inner.style.height = height + 'px';
+            });
+
+            chart.draw(dt, options);
+        }
+
+        async function loadTimelineChart() { /* Fetch and render sessions */
+            try {
+                const res = await fetch('/games/stats/session-timeline');
+                const sessions = await res.json();
+                drawTimeline(sessions);
+            } catch (e) {
+                document.getElementById('timelineChart').innerHTML = '<div class="text-danger">Failed to load timeline</div>';
+            }
+        }
+
+        google.charts.load('current', { packages: ['timeline'] });
+        google.charts.setOnLoadCallback(async function () {
+            await loadTimelineChart();
+            setInterval(loadTimelineChart, 30000);
+        });
+    </script>
+
+
+
+</body>
+
+</html>

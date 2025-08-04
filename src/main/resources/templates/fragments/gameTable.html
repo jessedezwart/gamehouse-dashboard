@@ -1,0 +1,16 @@
+<table class="table table-sm table-dark table-striped align-middle mb-0">
+  <thead>
+    <tr>
+      <th>User</th>
+      <th>Game</th>
+      <th>Playtime</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr th:each="s : ${sessions}">
+      <td th:text="${s.username}">Username</td>
+      <td th:text="${s.game}">Game</td>
+      <td th:text="${s.duration}">Duration</td>
+    </tr>
+  </tbody>
+</table>
