@@ -98,6 +98,9 @@ public class DiscordBotService {
                 }
             }, 5, TimeUnit.SECONDS);
 
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.error("Discord bot startup was interrupted", e);
         } catch (Exception e) {
             log.error("Failed to start Discord bot", e);
         }
