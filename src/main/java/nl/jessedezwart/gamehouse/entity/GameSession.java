@@ -17,14 +17,9 @@ public class GameSession {
     @GeneratedValue
     private Long id;
     private String discordUserId;
-
     private String username;
-
     private String game;
-
     private Instant startTime;
-
     private Duration totalDuration;
-
     private boolean active;
 }

@@ -20,9 +20,6 @@ import net.dv8tion.jda.api.JDABuilder;
 import net.dv8tion.jda.api.entities.Activity;
 import net.dv8tion.jda.api.entities.Guild;
 import net.dv8tion.jda.api.entities.Member;
-import net.dv8tion.jda.api.events.user.UserActivityEndEvent;
-import net.dv8tion.jda.api.events.user.UserActivityStartEvent;
-import net.dv8tion.jda.api.hooks.ListenerAdapter;
 import net.dv8tion.jda.api.requests.GatewayIntent;
 import net.dv8tion.jda.api.utils.ChunkingFilter;
 import net.dv8tion.jda.api.utils.MemberCachePolicy;
@@ -40,8 +37,10 @@ public class DiscordBotService {
     @Value("${discord.bot.token}")
     private String token;
 
+    // Tracks non-bot users by ID to display name
     private final Map<String, String> trackedUsers = new ConcurrentHashMap<>();
 
+    // Single scheduler for polling and periodic tasks
     private final ScheduledExecutorService scheduler = Executors.newSingleThreadScheduledExecutor();
 
     private JDA jda;
@@ -54,49 +53,51 @@ public class DiscordBotService {
     @PostConstruct
     public void startBot() {
         try {
-            // Enable presence/member intents, cache members and activities, and chunk all
-            // members into cache
+            // Build JDA with presence/member intents and full member/activity cache
             jda = JDABuilder.createDefault(token)
                     .enableIntents(GatewayIntent.GUILD_MEMBERS, GatewayIntent.GUILD_PRESENCES)
-                    .setMemberCachePolicy(MemberCachePolicy.ALL) // Cache all members so presence updates apply
-                    .enableCache(CacheFlag.ACTIVITY, CacheFlag.ONLINE_STATUS) // Cache activities and online status
-                    .setChunkingFilter(ChunkingFilter.ALL) // Request all guild members from gateway at startup
-                    .addEventListeners(new PresenceListener())
+                    .setMemberCachePolicy(MemberCachePolicy.ALL)
+                    .enableCache(CacheFlag.ACTIVITY, CacheFlag.ONLINE_STATUS)
+                    .setChunkingFilter(ChunkingFilter.ALL)
                     .build()
                     .awaitReady();
-
-            for (Guild guild : jda.getGuilds()) {
-                guild.loadMembers().onSuccess(members -> {
-                    for (Member member : members) {
-                        if (!member.getUser().isBot()) {
-                            String id = member.getId();
-                            String name = member.getEffectiveName();
-                            trackedUsers.put(id, name);
-                        }
-                    }
-                    log.info("Tracking {} users in guild '{}'", trackedUsers.size(), guild.getName());
-                });
-            }
 
             log.info("Discord bot connected as {}", jda.getSelfUser().getAsTag());
             log.info("Connected to {} guild(s)", jda.getGuilds().size());
 
-            // Immediate pass: log guilds and attempt a cached read of presences
-            for (Guild guild : jda.getGuilds()) {
-                log.info("Inspecting guild: {} (ID: {})", guild.getName(), guild.getId());
-                scanGuildOnce(guild, "startup-initial");
-            }
+            // Initial population of tracked users
+            refreshTrackedUsers("startup");
 
-            // Delayed rescan to allow presence payloads to arrive after chunking
+            // Initial scan after cache warmup
             scheduler.schedule(() -> {
                 try {
                     for (Guild guild : jda.getGuilds()) {
-                        scanGuildOnce(guild, "startup-rescan");
+                        scanGuildOnce(guild, "startup-scan");
                     }
                 } catch (Exception ex) {
-                    log.error("Startup rescan failed", ex);
+                    log.error("Startup scan failed", ex);
                 }
             }, 5, TimeUnit.SECONDS);
+
+            // Polling loop to detect active game changes
+            scheduler.scheduleAtFixedRate(() -> {
+                try {
+                    for (Guild guild : jda.getGuilds()) {
+                        scanGuildOnce(guild, "poll");
+                    }
+                } catch (Exception e) {
+                    log.error("Polling error", e);
+                }
+            }, 10, 10, TimeUnit.SECONDS);
+
+            // Periodic refresh of tracked users to pick up joins/leaves
+            scheduler.scheduleAtFixedRate(() -> {
+                try {
+                    refreshTrackedUsers("refresh");
+                } catch (Exception e) {
+                    log.error("User refresh error", e);
+                }
+            }, 60, 60, TimeUnit.SECONDS);
 
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -106,117 +107,89 @@ public class DiscordBotService {
         }
     }
 
-    // Scans tracked users in the given guild, using the cache for presence and
-    // activities
+    // Loads all non-bot members into trackedUsers
+    private void refreshTrackedUsers(String phase) {
+        int before = trackedUsers.size();
+        for (Guild guild : jda.getGuilds()) {
+            guild.loadMembers().onSuccess(members -> {
+                int added = 0;
+                for (Member member : members) {
+                    if (!member.getUser().isBot()) {
+                        String id = member.getId();
+                        String name = member.getEffectiveName();
+                        if (trackedUsers.put(id, name) == null) {
+                            added++;
+                        }
+                    }
+                }
+                log.info("[{}] Tracked {} users in guild '{}', +{} new", phase, trackedUsers.size(), guild.getName(),
+                        added);
+            }).onError(t -> log.warn("[{}] Failed to load members for guild {}", phase, guild.getName(), t));
+        }
+        log.debug("[{}] TrackedUsers size before={}, after={}", phase, before, trackedUsers.size());
+    }
+
+    // Single pass that reconciles current activities into GameSession state
     private void scanGuildOnce(Guild guild, String phase) {
+        Instant now = Instant.now();
         for (Map.Entry<String, String> entry : trackedUsers.entrySet()) {
             String userId = entry.getKey();
             String username = entry.getValue();
 
-            Member member = guild.getMemberById(userId); // Use cache to access presence and activities
-            if (member == null) {
-                log.warn("[{}] Tracked user {} not cached yet in guild {}. Waiting for chunking/presence.", phase,
-                        username, guild.getName());
+            Member member = guild.getMemberById(userId);
+            if (member == null)
                 continue;
-            }
 
-            log.info("[{}] Cached activities for {}:", phase, username);
-            for (Activity a : member.getActivities()) {
-                log.info("[{}]   - Name: {}, Type: {}, Raw: {}", phase, a.getName(), a.getType(), a);
-            }
-
-            Activity playing = member.getActivities().stream()
+            // Set of current PLAYING game names
+            var currentGames = member.getActivities().stream()
                     .filter(a -> a.getType() == Activity.ActivityType.PLAYING)
-                    .findFirst()
-                    .orElse(null);
+                    .map(Activity::getName)
+                    .filter(n -> n != null && !n.isBlank())
+                    .collect(java.util.stream.Collectors.toSet());
 
-            if (playing != null) {
-                boolean alreadyTracked = sessionRepo.findByDiscordUserIdAndActiveTrue(userId).isPresent();
-                if (!alreadyTracked) {
-                    GameSession session = new GameSession();
-                    session.setDiscordUserId(userId);
-                    session.setUsername(username);
-                    session.setGame(playing.getName());
-                    session.setStartTime(Instant.now());
-                    session.setTotalDuration(Duration.ZERO);
-                    session.setActive(true);
-                    sessionRepo.save(session);
-                    log.info("[{}] Started new session for {} playing {}", phase, username, playing.getName());
-                } else {
-                    log.info("[{}] {} already has an active session", phase, username);
+            // All active sessions for this user
+            var activeSessions = sessionRepo.findAllByDiscordUserIdAndActiveTrue(userId);
+
+            // Close sessions for games no longer present
+            for (GameSession s : activeSessions) {
+                if (!currentGames.contains(s.getGame())) {
+                    closeActiveSession(s, now, username);
                 }
-            } else {
-                log.info("[{}] {} is not playing anything", phase, username);
+            }
+
+            // Refresh active snapshot to avoid duplicates after closures
+            var stillActive = sessionRepo.findAllByDiscordUserIdAndActiveTrue(userId).stream()
+                    .map(GameSession::getGame)
+                    .collect(java.util.stream.Collectors.toSet());
+
+            // Start sessions for newly detected games
+            for (String game : currentGames) {
+                if (!stillActive.contains(game)) {
+                    startNewSession(userId, username, game, now);
+                }
             }
         }
     }
 
-    private class PresenceListener extends ListenerAdapter {
+    // Closes an active session and persists the accumulated duration
+    private void closeActiveSession(GameSession session, Instant now, String username) {
+        Duration add = Duration.between(session.getStartTime(), now);
+        session.setTotalDuration(session.getTotalDuration().plus(add));
+        session.setActive(false);
+        sessionRepo.save(session);
+        log.info("Closed session for {} on {} (+{} min)", username, session.getGame(), add.toMinutes());
+    }
 
-        @Override
-        public void onUserActivityStart(UserActivityStartEvent event) {
-            if (event.getUser().isBot())
-                return;
-            if (!trackedUsers.containsKey(event.getUser().getId()))
-                return;
-
-            Activity activity = event.getNewActivity();
-            String userId = event.getUser().getId();
-            String username = trackedUsers.get(userId);
-
-            log.info("ActivityStart for {} -> {} ({})", username, activity.getName(), activity.getType());
-
-            if (activity.getType() != Activity.ActivityType.PLAYING)
-                return;
-
-            Instant now = Instant.now();
-            GameSession existing = sessionRepo.findByDiscordUserIdAndActiveTrue(userId).orElse(null);
-            if (existing != null) {
-                Duration duration = Duration.between(existing.getStartTime(), now);
-                existing.setTotalDuration(existing.getTotalDuration().plus(duration));
-                existing.setActive(false);
-                sessionRepo.save(existing);
-                log.info("Ended previous session for {} and added {} minutes", username, duration.toMinutes());
-            }
-
-            GameSession newSession = new GameSession();
-            newSession.setDiscordUserId(userId);
-            newSession.setUsername(username);
-            newSession.setGame(activity.getName());
-            newSession.setStartTime(now);
-            newSession.setTotalDuration(Duration.ZERO);
-            newSession.setActive(true);
-            sessionRepo.save(newSession);
-            log.info("Started new session for {} playing {}", username, activity.getName());
-        }
-
-        @Override
-        public void onUserActivityEnd(UserActivityEndEvent event) {
-            if (event.getUser().isBot())
-                return;
-            if (!trackedUsers.containsKey(event.getUser().getId()))
-                return;
-
-            Activity activity = event.getOldActivity();
-            String userId = event.getUser().getId();
-            String username = trackedUsers.get(userId);
-
-            log.info("ActivityEnd for {} -> {} ({})", username, activity.getName(), activity.getType());
-
-            if (activity.getType() != Activity.ActivityType.PLAYING)
-                return;
-
-            GameSession session = sessionRepo.findByDiscordUserIdAndActiveTrue(userId).orElse(null);
-            if (session == null)
-                return;
-
-            Instant now = Instant.now();
-            Duration duration = Duration.between(session.getStartTime(), now);
-            session.setTotalDuration(session.getTotalDuration().plus(duration));
-            session.setActive(false);
-            sessionRepo.save(session);
-            log.info("User {} stopped playing {}. Session recorded: {} minutes", username, activity.getName(),
-                    duration.toMinutes());
-        }
+    // Starts a new active session for the given user and game
+    private void startNewSession(String userId, String username, String game, Instant now) {
+        GameSession s = new GameSession();
+        s.setDiscordUserId(userId);
+        s.setUsername(username);
+        s.setGame(game);
+        s.setStartTime(now);
+        s.setTotalDuration(Duration.ZERO);
+        s.setActive(true);
+        sessionRepo.save(s);
+        log.info("Started session for {} playing {}", username, game);
     }
 }

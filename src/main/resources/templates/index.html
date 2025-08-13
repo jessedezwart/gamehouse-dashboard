@@ -214,38 +214,54 @@
 
     <!-- Timeline script -->
     <script>
+        // singleton datasets and instance
+        let timeline;
+        const tlItems = new vis.DataSet();
+        const tlGroups = new vis.DataSet();
+
         async function loadVisTimeline() {
             const res = await fetch('/games/stats/session-timeline');
             const sessions = await res.json();
 
-            const users = Array.from(new Set(sessions.map(s => s.username)));
-            const groups = users.map((u, i) => ({ id: i + 1, content: u }));
+            // groups: use username as stable id
+            const groupDefs = [...new Set(sessions.map(s => s.username))]
+                .map(u => ({ id: u, content: u }));
+            tlGroups.update(groupDefs);
+            const incomingGroupIds = new Set(groupDefs.map(g => g.id));
+            tlGroups.getIds().forEach(id => { if (!incomingGroupIds.has(id)) tlGroups.remove(id); });
 
-            const items = new vis.DataSet(sessions.map((s, idx) => ({
-                id: idx + 1,
-                group: users.indexOf(s.username) + 1,
+            // items: stable composite id
+            const itemDefs = sessions.map(s => ({
+                id: `${s.username}|${s.start}|${s.end}|${s.game}`,
+                group: s.username,
                 content: s.game,
                 start: s.start,
                 end: s.end
-            })));
+            }));
+            tlItems.update(itemDefs);
+            const incomingItemIds = new Set(itemDefs.map(i => i.id));
+            tlItems.getIds().forEach(id => { if (!incomingItemIds.has(id)) tlItems.remove(id); });
 
-            const container = document.getElementById('visTimeline');
-            const options = {
-                stack: false,
-                horizontalScroll: true,
-                zoomKey: 'ctrlKey',
-                margin: { item: 8, axis: 5 },
-                orientation: { axis: 'bottom' },
-                height: '100%',
-                groupHeightMode: 'fixed'
-            };
-
-            new vis.Timeline(container, items, groups, options);
+            if (!timeline) {
+                const container = document.getElementById('visTimeline');
+                const options = {
+                    stack: false,
+                    horizontalScroll: true,
+                    zoomKey: 'ctrlKey',
+                    margin: { item: 8, axis: 5 },
+                    orientation: { axis: 'bottom' },
+                    height: '100%',
+                    groupHeightMode: 'fixed'
+                };
+                timeline = new vis.Timeline(container, tlItems, tlGroups, options);
+            }
         }
 
         loadVisTimeline();
         setInterval(loadVisTimeline, 30000);
     </script>
+
+
 
 </body>
 

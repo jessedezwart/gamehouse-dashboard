@@ -2,17 +2,20 @@ package nl.jessedezwart.gamehouse.controller;
 
 import java.time.Duration;
 import java.time.Instant;
-import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.NavigableMap;
 import java.util.TreeMap;
 import java.util.stream.Collectors;
 
 import org.springframework.stereotype.Controller;
 import org.springframework.ui.Model;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseBody;
 
 import nl.jessedezwart.gamehouse.dto.SessionTimelineDTO;
@@ -134,30 +137,90 @@ public class DashboardController {
 
     @GetMapping("/games/stats/peak-concurrency")
     @ResponseBody
-    public Map<String, Integer> getPeakConcurrency() {
-        List<GameSession> sessions = sessionRepo.findAll();
+    public Map<Long, Integer> getPeakConcurrency(
+            @RequestParam(name = "bucketSeconds", defaultValue = "60") int bucketSeconds) {
+
+        bucketSeconds = Math.max(30, Math.min(bucketSeconds, 900));
         Instant now = Instant.now();
 
-        TreeMap<Instant, Integer> timeline = new TreeMap<>();
-
-        for (GameSession session : sessions) {
-            Instant start = session.getStartTime();
-            Instant end = session.isActive() ? now : start.plus(session.getTotalDuration());
-
-            while (start.isBefore(end)) {
-                Instant rounded = start.truncatedTo(ChronoUnit.MINUTES).plusSeconds(-(start.getEpochSecond() % 300)); // 5-minute
-                                                                                                                      // bucket
-                timeline.merge(rounded, 1, Integer::sum);
-                start = start.plusSeconds(300);
+        // 1) collect intervals per user
+        Map<String, List<Range>> byUser = new HashMap<>();
+        for (GameSession s : sessionRepo.findAll()) {
+            Instant a = s.getStartTime();
+            Instant b = s.isActive() ? now : a.plus(s.getTotalDuration());
+            if (b.isAfter(a)) {
+                byUser.computeIfAbsent(s.getUsername(), k -> new ArrayList<>())
+                        .add(new Range(a, b));
             }
         }
 
-        return timeline.entrySet().stream()
-                .collect(Collectors.toMap(
-                        e -> e.getKey().toString(),
-                        Map.Entry::getValue,
-                        (a, b) -> b,
-                        LinkedHashMap::new));
+        // 2) merge per user to avoid double counting
+        List<Range> mergedAll = new ArrayList<>();
+        for (List<Range> list : byUser.values()) {
+            list.sort(Comparator.comparing(r -> r.start));
+            Instant ms = null, me = null;
+            for (Range r : list) {
+                if (ms == null) {
+                    ms = r.start;
+                    me = r.end;
+                    continue;
+                }
+                if (!r.start.isAfter(me)) { // overlap or touch
+                    if (r.end.isAfter(me))
+                        me = r.end;
+                } else {
+                    mergedAll.add(new Range(ms, me));
+                    ms = r.start;
+                    me = r.end;
+                }
+            }
+            if (ms != null)
+                mergedAll.add(new Range(ms, me));
+        }
+
+        // 3) sweep with correct bucket boundaries
+        NavigableMap<Instant, Integer> events = new TreeMap<>();
+        for (Range r : mergedAll) {
+            Instant a = floor(r.start, bucketSeconds); // inclusive
+            Instant b = ceil(r.end, bucketSeconds); // exclusive
+            events.merge(a, 1, Integer::sum);
+            events.merge(b, -1, Integer::sum);
+        }
+
+        // 4) expand to uniform buckets
+        Map<Long, Integer> out = new LinkedHashMap<>();
+        if (events.isEmpty())
+            return out;
+        Instant t = events.firstKey();
+        int running = 0;
+        while (true) {
+            running += events.getOrDefault(t, 0);
+            out.put(t.getEpochSecond() * 1000L, Math.max(0, running));
+            Instant next = t.plusSeconds(bucketSeconds);
+            if (next.isAfter(Instant.now()))
+                break;
+            t = next;
+        }
+        return out;
+    }
+
+    private static Instant floor(Instant x, int s) {
+        long e = x.getEpochSecond();
+        return Instant.ofEpochSecond((e / s) * s);
+    }
+
+    private static Instant ceil(Instant x, int s) {
+        long e = x.getEpochSecond();
+        return Instant.ofEpochSecond(((e + s - 1) / s) * s);
+    }
+
+    private static class Range {
+        final Instant start, end;
+
+        Range(Instant s, Instant e) {
+            this.start = s;
+            this.end = e;
+        }
     }
 
     @GetMapping("/games/stats/session-timeline")
